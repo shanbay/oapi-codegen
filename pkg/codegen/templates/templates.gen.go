@@ -804,6 +804,12 @@ const (
 `,
 	"echo-interface.tmpl": `// ServerInterface represents all server handlers.
 type ServerInterface interface {
+{{- if gt (len .GetAllSanitizedMiddlewares ) 0}}
+{{- range .GetAllSanitizedMiddlewares }}
+{{.}}() echo.MiddlewareFunc
+{{- end}}
+
+{{end}}
 {{range .}}{{.SummaryAsComment }}
 // ({{.Method}} {{.Path}})
 {{.OperationId}}(ctx echo.Context{{genParamArgs .PathParams}}{{if .RequiresParamObject}}, params {{.OperationId}}Params{{end}}) error
@@ -840,7 +846,7 @@ func RegisterHandlersWithBaseURL(router EchoRouter, si ServerInterface, baseURL 
         Handler: si,
     }
 {{end}}
-{{range .}}router.{{.Method}}(baseURL + "{{.Path | swaggerUriToEchoUri}}", wrapper.{{.OperationId}})
+{{range .}}router.{{.Method}}(baseURL + "{{.Path | swaggerUriToEchoUri}}", wrapper.{{.OperationId}}, {{- range $index, $middleware := .Middlewares -}}{{- if $index}}, {{end}}wrapper.Handler.{{$middleware}}(){{- end}})
 {{end}}
 }
 `,

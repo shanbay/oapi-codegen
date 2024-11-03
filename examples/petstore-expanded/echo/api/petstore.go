@@ -143,3 +143,21 @@ func (p *PetStore) DeletePet(ctx echo.Context, id int64) error {
 	delete(p.Pets, id)
 	return ctx.NoContent(http.StatusNoContent)
 }
+
+func (p *PetStore) TestMdw1() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(ctx echo.Context) error {
+			ctx.Response().Header().Set("X-Test-Middleware", "1")
+			return next(ctx)
+		}
+	}
+}
+
+func (p *PetStore) TestMdw2() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(ctx echo.Context) error {
+			ctx.Response().Header().Set("X-Test-Middleware", "2")
+			return next(ctx)
+		}
+	}
+}
