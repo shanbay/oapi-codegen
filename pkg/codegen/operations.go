@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 	"text/template"
 	"unicode"
@@ -209,6 +210,24 @@ type OperationDefinition struct {
 	Method              string                  // GET, POST, DELETE, etc.
 	Path                string                  // The Swagger path for the operation, like /resource/{id}
 	Spec                *openapi3.Operation
+	Middlewares         []string
+}
+
+type OperationDefinitionData []OperationDefinition
+
+func (d OperationDefinitionData) GetAllSanitizedMiddlewares() []string {
+	middlewaresMap := make(map[string]bool)
+	for _, operationDefinition := range d {
+		for _, middleware := range operationDefinition.Middlewares {
+			middlewaresMap[middleware] = true
+		}
+	}
+	var middlewares []string
+	for middleware := range middlewaresMap {
+		middlewares = append(middlewares, SchemaNameToTypeName(middleware))
+	}
+	sort.Strings(middlewares)
+	return middlewares
 }
 
 // Returns the list of all parameters except Path parameters. Path parameters
@@ -315,6 +334,14 @@ func (o *OperationDefinition) GetResponseTypeDefinitions() ([]ResponseTypeDefini
 	return tds, nil
 }
 
+func (o *OperationDefinition) SanitizedMiddlewares() []string {
+	result := make([]string, len(o.Middlewares))
+	for i, value := range o.Middlewares {
+		result[i] = SchemaNameToTypeName(value)
+	}
+	return result
+}
+
 // This describes a request body
 type RequestBodyDefinition struct {
 	// Is this body required, or optional?
@@ -374,8 +401,8 @@ func FilterParameterDefinitionByType(params []ParameterDefinition, in string) []
 }
 
 // OperationDefinitions returns all operations for a swagger definition.
-func OperationDefinitions(swagger *openapi3.T) ([]OperationDefinition, error) {
-	var operations []OperationDefinition
+func OperationDefinitions(swagger *openapi3.T) (OperationDefinitionData, error) {
+	var operations OperationDefinitionData
 
 	for _, requestPath := range SortedPathsKeys(swagger.Paths) {
 		pathItem := swagger.Paths[requestPath]
@@ -387,6 +414,15 @@ func OperationDefinitions(swagger *openapi3.T) ([]OperationDefinition, error) {
 				requestPath, err)
 		}
 
+		var pathMiddlewares []string
+		if extension, ok := pathItem.Extensions[extMiddleware]; ok {
+			var err error
+			pathMiddlewares, err = extParseMiddlewares(extension)
+			if err != nil {
+				return nil, fmt.Errorf("error parsing middlewares for %s: %s",
+					requestPath, err)
+			}
+		}
 		// Each path can have a number of operations, POST, GET, OPTIONS, etc.
 		pathOps := pathItem.Operations()
 		for _, opName := range SortedOperationsKeys(pathOps) {
@@ -426,6 +462,18 @@ func OperationDefinitions(swagger *openapi3.T) ([]OperationDefinition, error) {
 				return nil, err
 			}
 
+			middlewares := pathMiddlewares
+			if extension, ok := op.Extensions[extMiddleware]; ok {
+				opMiddlewares, err := extParseMiddlewares(extension)
+				if err != nil {
+					return nil, fmt.Errorf("invalid value for %q: %w", extMiddleware, err)
+				}
+				middlewares = append(middlewares, opMiddlewares...)
+			}
+			for i, middleware := range middlewares {
+				middlewares[i] = ToCamelCase(middleware)
+			}
+
 			bodyDefinitions, typeDefinitions, err := GenerateBodyDefinitions(op.OperationID, op.RequestBody)
 			if err != nil {
 				return nil, fmt.Errorf("error generating body definitions: %w", err)
@@ -444,6 +492,7 @@ func OperationDefinitions(swagger *openapi3.T) ([]OperationDefinition, error) {
 				Spec:            op,
 				Bodies:          bodyDefinitions,
 				TypeDefinitions: typeDefinitions,
+				Middlewares:     middlewares,
 			}
 
 			// check for overrides of SecurityDefinitions.
@@ -618,7 +667,7 @@ func GenerateParamsTypes(op OperationDefinition) []TypeDefinition {
 }
 
 // Generates code for all types produced
-func GenerateTypesForOperations(t *template.Template, ops []OperationDefinition) (string, error) {
+func GenerateTypesForOperations(t *template.Template, ops OperationDefinitionData) (string, error) {
 	var buf bytes.Buffer
 	w := bufio.NewWriter(&buf)
 
@@ -659,31 +708,31 @@ func GenerateTypesForOperations(t *template.Template, ops []OperationDefinition)
 
 // GenerateChiServer This function generates all the go code for the ServerInterface as well as
 // all the wrapper functions around our handlers.
-func GenerateChiServer(t *template.Template, operations []OperationDefinition) (string, error) {
+func GenerateChiServer(t *template.Template, operations OperationDefinitionData) (string, error) {
 	return GenerateTemplates([]string{"chi-interface.tmpl", "chi-middleware.tmpl", "chi-handler.tmpl"}, t, operations)
 }
 
 // GenerateEchoServer This function generates all the go code for the ServerInterface as well as
 // all the wrapper functions around our handlers.
-func GenerateEchoServer(t *template.Template, operations []OperationDefinition) (string, error) {
+func GenerateEchoServer(t *template.Template, operations OperationDefinitionData) (string, error) {
 	return GenerateTemplates([]string{"echo-interface.tmpl", "echo-wrappers.tmpl", "echo-register.tmpl"}, t, operations)
 }
 
 // GenerateGinServer This function generates all the go code for the ServerInterface as well as
 // all the wrapper functions around our handlers.
-func GenerateGinServer(t *template.Template, operations []OperationDefinition) (string, error) {
+func GenerateGinServer(t *template.Template, operations OperationDefinitionData) (string, error) {
 	return GenerateTemplates([]string{"gin-interface.tmpl", "gin-wrappers.tmpl", "gin-register.tmpl"}, t, operations)
 }
 
 // Uses the template engine to generate the function which registers our wrappers
 // as Echo path handlers.
-func GenerateClient(t *template.Template, ops []OperationDefinition) (string, error) {
+func GenerateClient(t *template.Template, ops OperationDefinitionData) (string, error) {
 	return GenerateTemplates([]string{"client.tmpl"}, t, ops)
 }
 
 // This generates a client which extends the basic client which does response
 // unmarshaling.
-func GenerateClientWithResponses(t *template.Template, ops []OperationDefinition) (string, error) {
+func GenerateClientWithResponses(t *template.Template, ops OperationDefinitionData) (string, error) {
 	return GenerateTemplates([]string{"client-with-responses.tmpl"}, t, ops)
 }
 
